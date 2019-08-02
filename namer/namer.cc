@@ -23,6 +23,81 @@ namespace sorbet::namer {
 class NameInserter {
     friend class Namer;
 
+    /* There's some complexity going on in the next few methods, so here's the explanation: 
+     *
+     */
+    core::SymbolRef findMember(core::MutableContext ctx, core::SymbolRef owner, core::NameRef name) {
+        // if we have an entry in the collision map, then it means we have a redefined name: look up the mangled name
+        // specified in the collision map instead of the naive name
+        auto currentMember = collisionMap.find(pair(owner, name));
+        if (currentMember != collisionMap.end()) {
+            // unless we've run out of redefines, in which case look up the actual name.
+            if (currentMember->second == 0) {
+                return owner.data(ctx)->findMember(ctx, name);
+            } else {
+                auto newName = ctx.state.freshNameUnique(core::UniqueNameKind::MangleRename, name, currentMember->second);
+                return owner.data(ctx)->findMember(ctx, newName);
+            }
+        }
+        auto firstAlias = ctx.state.freshNameUnique(core::UniqueNameKind::MangleRename, name, 1);
+        auto maybeAlias = owner.data(ctx)->findMember(ctx, firstAlias);
+        if (maybeAlias != core::Symbols::noSymbol() && maybeAlias.data(ctx)->loc().file() == owner.data(ctx)->loc().file()) {
+            collisionMap.insert({pair(owner, name), 1});
+            return maybeAlias;
+        }
+        auto sym = owner.data(ctx)->findMember(ctx, name);
+        collisionMap.insert({pair(owner, name), 0});
+        return sym;
+    }
+
+    core::SymbolRef findMemberNoDealias(core::MutableContext ctx, core::SymbolRef owner, core::NameRef name) {
+        // if we have an entry in the collision map, then it means we have a redefined name: look up the mangled name
+        // specified in the collision map instead of the naive name
+        auto currentMember = collisionMap.find(pair(owner, name));
+        if (currentMember != collisionMap.end()) {
+            // unless we've run out of redefines, in which case look up the actual name.
+            if (currentMember->second == 0) {
+                return owner.data(ctx)->findMemberNoDealias(ctx, name);
+            } else {
+                auto newName = ctx.state.freshNameUnique(core::UniqueNameKind::MangleRename, name, currentMember->second);
+                return owner.data(ctx)->findMemberNoDealias(ctx, newName);
+            }
+        }
+        auto firstAlias = ctx.state.freshNameUnique(core::UniqueNameKind::MangleRename, name, 1);
+        auto maybeAlias = owner.data(ctx)->findMemberNoDealias(ctx, firstAlias);
+        if (maybeAlias != core::Symbols::noSymbol()) {
+            collisionMap.insert({pair(owner, name), 1});
+            return maybeAlias;
+        }
+        auto sym = owner.data(ctx)->findMemberNoDealias(ctx, name);
+        collisionMap.insert({pair(owner, name), 0});
+        return sym;
+    }
+
+    core::SymbolRef findNextMangledName(core::MutableContext ctx, core::SymbolRef owner, core::NameRef name) {
+        auto nameData = name.data(ctx);
+        core::NameRef originalName = name;
+        if (nameData->kind == core::UNIQUE) {
+            originalName = nameData->unique.original;
+        }
+
+        auto offset = collisionMap.find(pair(owner, originalName));
+        if (offset == collisionMap.end() || offset->second == 0) {
+            // we don't have any mangled names here, which is fine: this likely means it's the first time looking at the
+            // file, in which case we should always default to looking up the bare unmodified name.
+            return core::Symbols::noSymbol();
+        }
+        offset->second += 1;
+        auto newName = ctx.state.freshNameUnique(core::UniqueNameKind::MangleRename, originalName, offset->second);
+        auto sym = owner.data(ctx)->findMember(ctx, newName);
+        if (sym == core::Symbols::noSymbol()) {
+            // we've exhausted the mangled names; once we've done so, the last name should be the "unmangled" one
+            collisionMap[pair(owner, name)] = 0;
+            return owner.data(ctx)->findMember(ctx, originalName);
+        }
+        return sym;
+    }
+
     core::SymbolRef squashNames(core::MutableContext ctx, core::SymbolRef owner, unique_ptr<ast::Expression> &node) {
         auto constLit = ast::cast_tree<ast::UnresolvedConstantLit>(node.get());
         if (constLit == nullptr) {
@@ -50,7 +125,7 @@ class NameInserter {
         }
 
         auto newOwner = squashNames(ctx, owner, constLit->scope);
-        core::SymbolRef existing = newOwner.data(ctx)->findMember(ctx, constLit->cnst);
+        core::SymbolRef existing = findMember(ctx, newOwner, constLit->cnst);
         if (!existing.exists()) {
             if (!newOwner.data(ctx)->isClass()) {
                 if (auto e = ctx.state.beginError(node->loc, core::errors::Namer::InvalidClassOwner)) {
@@ -124,6 +199,7 @@ class NameInserter {
     }
 
     vector<LocalFrame> scopeStack;
+    UnorderedMap<pair<core::SymbolRef, core::NameRef>, u2> collisionMap;
 
     bool addAncestor(core::MutableContext ctx, unique_ptr<ast::ClassDef> &klass, unique_ptr<ast::Expression> &node) {
         auto send = ast::cast_tree<ast::Send>(node.get());
@@ -233,15 +309,20 @@ public:
                     e.addErrorLine(klass->symbol.data(ctx)->loc(), "Previous definition");
                 }
                 auto origName = klass->symbol.data(ctx)->name;
-                ctx.state.mangleRenameSymbol(klass->symbol, klass->symbol.data(ctx)->name);
-                klass->symbol = ctx.state.enterClassSymbol(klass->declLoc, klass->symbol.data(ctx)->owner, origName);
-                klass->symbol.data(ctx)->setIsModule(isModule);
+                auto mangledSym = findNextMangledName(ctx, klass->symbol.data(ctx)->owner, origName);
+                if (mangledSym != core::Symbols::noSymbol()) {
+                    klass->symbol = mangledSym;
+                } else {
+                    ctx.state.mangleRenameSymbol(klass->symbol, klass->symbol.data(ctx)->name);
+                    klass->symbol = ctx.state.enterClassSymbol(klass->declLoc, klass->symbol.data(ctx)->owner, origName);
+                    klass->symbol.data(ctx)->setIsModule(isModule);
 
-                auto oldSymCount = ctx.state.symbolsUsed();
-                auto newSingleton =
-                    klass->symbol.data(ctx)->singletonClass(ctx); // force singleton class into existence
-                ENFORCE(newSingleton._id >= oldSymCount,
-                        "should be a fresh symbol. Otherwise we could be reusing an existing singletonClass");
+                    auto oldSymCount = ctx.state.symbolsUsed();
+                    auto newSingleton =
+                        klass->symbol.data(ctx)->singletonClass(ctx); // force singleton class into existence
+                    ENFORCE(newSingleton._id >= oldSymCount,
+                            "should be a fresh symbol. Otherwise we could be reusing an existing singletonClass");
+                }
             } else if (klass->symbol.data(ctx)->isClassModuleSet() &&
                        isModule != klass->symbol.data(ctx)->isClassModule()) {
                 if (auto e = ctx.state.beginError(klass->loc, core::errors::Namer::ModuleKindRedefinition)) {
@@ -440,7 +521,7 @@ public:
                         }
                         core::NameRef name = lit->asSymbol(ctx);
 
-                        core::SymbolRef meth = methodOwner(ctx).data(ctx)->findMember(ctx, name);
+                        core::SymbolRef meth = findMember(ctx, methodOwner(ctx), name);
                         if (!meth.exists()) {
                             if (auto e = ctx.state.beginError(arg->loc, core::errors::Namer::MethodNotFound)) {
                                 e.setHeader("`{}`: no such method: `{}`", original->fun.show(ctx), name.show(ctx));
@@ -544,7 +625,7 @@ public:
 
         auto parsedArgs = ast::ArgParsing::parseArgs(ctx, method->args);
 
-        auto sym = owner.data(ctx)->findMemberNoDealias(ctx, method->name);
+        auto sym = findMemberNoDealias(ctx, owner, method->name);
         if (sym.exists()) {
             if (method->declLoc == sym.data(ctx)->loc()) {
                 // TODO remove if the paramsMatch is perfect
@@ -556,7 +637,10 @@ public:
             if (isIntrinsic(ctx, sym) || paramsMatch(ctx.withOwner(sym), method->declLoc, parsedArgs)) {
                 sym.data(ctx)->addLoc(ctx, method->declLoc);
             } else {
-                ctx.state.mangleRenameSymbol(sym, method->name);
+                auto nextName = findNextMangledName(ctx, owner, method->name);
+                if (nextName == core::Symbols::noSymbol()) {
+                    ctx.state.mangleRenameSymbol(sym, method->name);
+                }
             }
         }
         method->symbol = ctx.state.enterMethodSymbol(method->declLoc, owner, method->name);
@@ -586,8 +670,7 @@ public:
         ENFORCE(nm->kind != ast::UnresolvedIdent::Local, "Unresolved local left after `name_locals`");
 
         if (nm->kind == ast::UnresolvedIdent::Global) {
-            core::SymbolData root = core::Symbols::root().data(ctx);
-            core::SymbolRef sym = root->findMember(ctx, nm->name);
+            core::SymbolRef sym = findMember(ctx, core::Symbols::root(), nm->name);
             if (!sym.exists()) {
                 sym = ctx.state.enterFieldSymbol(nm->loc, core::Symbols::root(), nm->name);
             }
@@ -639,20 +722,35 @@ public:
             }
             // Mangle this one out of the way, and re-enter a symbol with this name as a class.
             auto scopeName = scope.data(ctx)->name;
-            ctx.state.mangleRenameSymbol(scope, scopeName);
-            scope = ctx.state.enterClassSymbol(lhs->scope->loc, scope.data(ctx)->owner, scopeName);
-            scope.data(ctx)->singletonClass(ctx); // force singleton class into existance
+            auto nextName = findNextMangledName(ctx, scope.data(ctx)->owner, scopeName);
+            if (nextName != core::Symbols::noSymbol()) {
+                scope = nextName;
+            } else {
+                ctx.state.mangleRenameSymbol(scope, scopeName);
+                scope = ctx.state.enterClassSymbol(lhs->scope->loc, scope.data(ctx)->owner, scopeName);
+                scope.data(ctx)->singletonClass(ctx); // force singleton class into existance
+            }
         }
 
-        auto sym = scope.data(ctx)->findMemberNoDealias(ctx, lhs->cnst);
+        auto sym = findMemberNoDealias(ctx, scope, lhs->cnst);
         if (sym.exists() && !sym.data(ctx)->isStaticField()) {
             if (auto e = ctx.state.beginError(asgn->loc, core::errors::Namer::ModuleKindRedefinition)) {
                 e.setHeader("Redefining constant `{}`", lhs->cnst.data(ctx)->show(ctx));
                 e.addErrorLine(sym.data(ctx)->loc(), "Previous definition");
             }
-            ctx.state.mangleRenameSymbol(sym, sym.data(ctx)->name);
+            auto nextName = findNextMangledName(ctx, sym.data(ctx)->owner, sym.data(ctx)->name);
+            if (nextName != core::Symbols::noSymbol()) {
+                sym = nextName;
+            } else {
+                ctx.state.mangleRenameSymbol(sym, sym.data(ctx)->name);
+            }
         }
-        core::SymbolRef cnst = ctx.state.enterStaticFieldSymbol(lhs->loc, scope, lhs->cnst);
+        core::SymbolRef cnst;
+        if (sym.exists()) {
+            cnst = ctx.state.enterStaticFieldSymbol(lhs->loc, scope, sym.data(ctx)->name);
+        } else {
+            cnst = ctx.state.enterStaticFieldSymbol(lhs->loc, scope, lhs->cnst);
+        }
         auto loc = lhs->loc;
         unique_ptr<ast::UnresolvedConstantLit> lhsU(lhs);
         asgn->lhs.release();
@@ -728,24 +826,26 @@ public:
             }
             return make_unique<ast::EmptyTree>();
         }
-        auto oldSym = onSymbol.data(ctx)->findMemberNoDealias(ctx, typeName->cnst);
+        auto oldSym = findMemberNoDealias(ctx, onSymbol, typeName->cnst);
         if (oldSym.exists() && !(oldSym.data(ctx)->loc() == asgn->loc || oldSym.data(ctx)->loc().isTombStoned(ctx))) {
             if (auto e = ctx.state.beginError(typeName->loc, core::errors::Namer::InvalidTypeDefinition)) {
                 e.setHeader("Redefining constant `{}`", oldSym.data(ctx)->show(ctx));
                 e.addErrorLine(oldSym.data(ctx)->loc(), "Previous definition");
             }
+            // XXX
             ctx.state.mangleRenameSymbol(oldSym, oldSym.data(ctx)->name);
         }
         auto sym = ctx.state.enterTypeMember(asgn->loc, onSymbol, typeName->cnst, variance);
         if (isTypeTemplate) {
             auto context = ctx.owner.data(ctx)->enclosingClass(ctx);
-            oldSym = context.data(ctx)->findMemberNoDealias(ctx, typeName->cnst);
+            oldSym = findMemberNoDealias(ctx, context, typeName->cnst);
             if (oldSym.exists() &&
                 !(oldSym.data(ctx)->loc() == asgn->loc || oldSym.data(ctx)->loc().isTombStoned(ctx))) {
                 if (auto e = ctx.state.beginError(typeName->loc, core::errors::Namer::InvalidTypeDefinition)) {
                     e.setHeader("Redefining constant `{}`", typeName->cnst.data(ctx)->show(ctx));
                     e.addErrorLine(oldSym.data(ctx)->loc(), "Previous definition");
                 }
+                // XXX
                 ctx.state.mangleRenameSymbol(oldSym, typeName->cnst);
             }
             auto alias = ctx.state.enterStaticFieldSymbol(asgn->loc, context, typeName->cnst);
