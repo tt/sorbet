@@ -253,7 +253,7 @@ unique_ptr<core::GlobalState> LSPLoop::runLSP() {
     LSPLoop::QueueState guardedState{{}, false, false, 0};
     absl::Mutex mtx;
     absl::Notification initializedNotification;
-    shared_ptr<atomic<int>> epoch;
+    shared_ptr<atomic<int>> epoch = make_shared<atomic<int>>(0);
     initialGS->lspEpoch = epoch;
 
     unique_ptr<watchman::WatchmanProcess> watchmanProcess;
