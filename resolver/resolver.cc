@@ -653,13 +653,14 @@ public:
             ResolveConstantsWalk constants(ictx);
             vector<ast::ParsedFile> partiallyResolvedTrees;
             ast::ParsedFile job;
-            for (auto result = fileq->try_pop(job); !result.done(); result = fileq->try_pop(job)) {
+            for (auto result = fileq->try_pop(job); !result.done() && !ictx.state.shouldCancelTypechecking();
+                 result = fileq->try_pop(job)) {
                 if (result.gotItem()) {
                     job.tree = ast::TreeMap::apply(ictx, constants, std::move(job.tree));
                     partiallyResolvedTrees.emplace_back(move(job));
                 }
             }
-            if (!partiallyResolvedTrees.empty()) {
+            if (!ictx.state.shouldCancelTypechecking() && !partiallyResolvedTrees.empty()) {
                 ResolveWalkResult result{move(constants.todo_), move(constants.todoAncestors_),
                                          move(constants.todoClassAliases_), move(constants.todoTypeAliases_),
                                          move(partiallyResolvedTrees)};
@@ -676,7 +677,7 @@ public:
         {
             ResolveWalkResult threadResult;
             for (auto result = resultq->wait_pop_timed(threadResult, WorkerPool::BLOCK_INTERVAL(), ctx.state.tracer());
-                 !result.done();
+                 !result.done() && !ictx.state.shouldCancelTypechecking();
                  result = resultq->wait_pop_timed(threadResult, WorkerPool::BLOCK_INTERVAL(), ctx.state.tracer())) {
                 if (result.gotItem()) {
                     todo.insert(todo.end(), make_move_iterator(threadResult.todo_.begin()),
@@ -692,6 +693,10 @@ public:
                     trees.insert(trees.end(), make_move_iterator(threadResult.trees.begin()),
                                  make_move_iterator(threadResult.trees.end()));
                 }
+            }
+
+            if (ictx.state.shouldCancelTypechecking()) {
+                return {};
             }
         }
 
@@ -1714,10 +1719,19 @@ public:
 
 vector<ast::ParsedFile> Resolver::run(core::MutableContext ctx, vector<ast::ParsedFile> trees, WorkerPool &workers) {
     trees = ResolveConstantsWalk::resolveConstants(ctx, std::move(trees), workers);
+    if (ctx.state.shouldCancelTypechecking()) {
+        return trees;
+    }
     finalizeAncestors(ctx.state);
     trees = resolveMixesInClassMethods(ctx, std::move(trees));
+    if (ctx.state.shouldCancelTypechecking()) {
+        return trees;
+    }
     finalizeSymbols(ctx.state);
     trees = resolveSigs(ctx, std::move(trees));
+    if (ctx.state.shouldCancelTypechecking()) {
+        return trees;
+    }
     sanityCheck(ctx, trees);
 
     return trees;
@@ -1727,6 +1741,9 @@ vector<ast::ParsedFile> Resolver::resolveSigs(core::MutableContext ctx, vector<a
     ResolveSignaturesWalk sigs;
     Timer timeit(ctx.state.errorQueue->logger, "resolver.sigs_vars_and_flatten");
     for (auto &tree : trees) {
+        if (ctx.state.shouldCancelTypechecking()) {
+            return trees;
+        }
         tree.tree = ast::TreeMap::apply(ctx, sigs, std::move(tree.tree));
     }
 
@@ -1747,6 +1764,9 @@ void Resolver::sanityCheck(core::MutableContext ctx, vector<ast::ParsedFile> &tr
         Timer timeit(ctx.state.errorQueue->logger, "resolver.sanity_check");
         ResolveSanityCheckWalk sanity;
         for (auto &tree : trees) {
+            if (ctx.state.shouldCancelTypechecking()) {
+                return;
+            }
             tree.tree = ast::TreeMap::apply(ctx, sanity, std::move(tree.tree));
         }
     }

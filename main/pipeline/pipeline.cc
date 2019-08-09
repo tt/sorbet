@@ -924,7 +924,8 @@ vector<ast::ParsedFile> typecheck(unique_ptr<core::GlobalState> &gs, vector<ast:
                 int processedByThread = 0;
 
                 {
-                    for (auto result = fileq->try_pop(job); !result.done(); result = fileq->try_pop(job)) {
+                    for (auto result = fileq->try_pop(job); !result.done() && !ctx.state.shouldCancelTypechecking();
+                         result = fileq->try_pop(job)) {
                         if (result.gotItem()) {
                             processedByThread++;
                             core::FileRef file = job.file;
@@ -938,11 +939,15 @@ vector<ast::ParsedFile> typecheck(unique_ptr<core::GlobalState> &gs, vector<ast:
                         }
                     }
                 }
-                if (processedByThread > 0) {
+                if (!ctx.state.shouldCancelTypechecking() && processedByThread > 0) {
                     threadResult.counters = getAndClearThreadCounters();
                     resultq->push(move(threadResult), processedByThread);
                 }
             });
+
+            if (ctx.state.shouldCancelTypechecking()) {
+                return {};
+            }
 
             typecheck_thread_result threadResult;
             {
@@ -956,6 +961,9 @@ vector<ast::ParsedFile> typecheck(unique_ptr<core::GlobalState> &gs, vector<ast:
                     }
                     cfgInferProgress.reportProgress(fileq->doneEstimate());
                     gs->errorQueue->flushErrors();
+                    if (ctx.state.shouldCancelTypechecking()) {
+                        return {};
+                    }
                 }
             }
         }

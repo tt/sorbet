@@ -48,7 +48,7 @@ const int Symbols::MAX_PROC_ARITY;
 
 GlobalState::GlobalState(shared_ptr<ErrorQueue> errorQueue)
     : globalStateId(globalStateIdCounter.fetch_add(1)), errorQueue(std::move(errorQueue)),
-      lspQuery(lsp::Query::noQuery()) {
+      lspQuery(lsp::Query::noQuery()), lspEpoch(nullptr) {
     // Empirically determined to be the smallest powers of two larger than the
     // values required by the payload
     unsigned int maxNameCount = 8192;
@@ -1181,6 +1181,8 @@ unique_ptr<GlobalState> GlobalState::deepCopy(bool keepId) const {
     result->fileRefByPath = this->fileRefByPath;
     result->lspQuery = this->lspQuery;
     result->lspTypecheckCount = this->lspTypecheckCount;
+    // Epoch should be shared with copies.
+    result->lspEpoch = this->lspEpoch;
     result->errorUrlBase = this->errorUrlBase;
     result->suppressedErrorClasses = this->suppressedErrorClasses;
     result->onlyErrorClasses = this->onlyErrorClasses;
@@ -1321,6 +1323,10 @@ bool GlobalState::shouldReportErrorOn(Loc loc, ErrorClass what) const {
 
 bool GlobalState::wasModified() const {
     return wasModified_;
+}
+
+bool GlobalState::shouldCancelTypechecking() const {
+    return lspEpoch != nullptr && expectedLspEpoch && expectedLspEpoch.value() != lspEpoch->load();
 }
 
 void GlobalState::trace(string_view msg) const {

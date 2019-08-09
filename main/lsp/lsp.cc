@@ -44,7 +44,7 @@ LSPLoop::setupLSPQueryByLoc(unique_ptr<core::GlobalState> gs, string_view uri, c
     if (errorIfFileIsUntyped && fref.data(*gs).strictLevel < core::StrictLevel::True) {
         logger->info("Ignoring request on untyped file `{}`", uri);
         // Act as if the query returned no results.
-        return TypecheckRun{{}, {}, {}, move(gs), {}, true};
+        return TypecheckRun(move(gs));
     }
 
     auto loc = lspPos2Loc(fref, pos, *gs);
@@ -232,8 +232,8 @@ void LSPLoop::sendCountersToStatsd(chrono::time_point<chrono::steady_clock> curr
     }
 }
 
-LSPResult LSPResult::make(unique_ptr<core::GlobalState> gs, unique_ptr<ResponseMessage> response) {
-    LSPResult rv{move(gs), {}};
+LSPResult LSPResult::make(unique_ptr<core::GlobalState> gs, unique_ptr<ResponseMessage> response, bool canceled) {
+    LSPResult rv{move(gs), {}, canceled};
     rv.responses.push_back(make_unique<LSPMessage>(move(response)));
     return rv;
 }

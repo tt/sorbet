@@ -110,10 +110,11 @@ void LSPLoop::preprocessSorbetWorkspaceEdit(const WatchmanQueryResponse &queryRe
 }
 
 LSPLoop::TypecheckRun
-LSPLoop::commitSorbetWorkspaceEdits(unique_ptr<core::GlobalState> gs,
+LSPLoop::commitSorbetWorkspaceEdits(unique_ptr<core::GlobalState> gs, int msgEpoch,
                                     UnorderedMap<string, LSPLoop::SorbetWorkspaceFileUpdate> &updates) const {
     if (!updates.empty()) {
         FileUpdates fileUpdates;
+        fileUpdates.updateEpoch = msgEpoch;
         fileUpdates.updatedFiles.reserve(updates.size());
         for (auto &update : updates) {
             auto file =
@@ -128,39 +129,39 @@ LSPLoop::commitSorbetWorkspaceEdits(unique_ptr<core::GlobalState> gs,
         }
         return tryFastPath(move(gs), move(fileUpdates));
     } else {
-        return TypecheckRun{{}, {}, {}, move(gs), {}, true};
+        return TypecheckRun(move(gs));
     }
 }
 
-LSPLoop::TypecheckRun LSPLoop::handleSorbetWorkspaceEdit(unique_ptr<core::GlobalState> gs,
+LSPLoop::TypecheckRun LSPLoop::handleSorbetWorkspaceEdit(unique_ptr<core::GlobalState> gs, int msgEpoch,
                                                          const DidChangeTextDocumentParams &changeParams) const {
     UnorderedMap<string, LSPLoop::SorbetWorkspaceFileUpdate> updates;
     preprocessSorbetWorkspaceEdit(changeParams, updates);
-    return commitSorbetWorkspaceEdits(move(gs), updates);
+    return commitSorbetWorkspaceEdits(move(gs), msgEpoch, updates);
 }
 
-LSPLoop::TypecheckRun LSPLoop::handleSorbetWorkspaceEdit(unique_ptr<core::GlobalState> gs,
+LSPLoop::TypecheckRun LSPLoop::handleSorbetWorkspaceEdit(unique_ptr<core::GlobalState> gs, int msgEpoch,
                                                          const DidOpenTextDocumentParams &openParams) const {
     UnorderedMap<string, LSPLoop::SorbetWorkspaceFileUpdate> updates;
     preprocessSorbetWorkspaceEdit(openParams, updates);
-    return commitSorbetWorkspaceEdits(move(gs), updates);
+    return commitSorbetWorkspaceEdits(move(gs), msgEpoch, updates);
 }
 
-LSPLoop::TypecheckRun LSPLoop::handleSorbetWorkspaceEdit(unique_ptr<core::GlobalState> gs,
+LSPLoop::TypecheckRun LSPLoop::handleSorbetWorkspaceEdit(unique_ptr<core::GlobalState> gs, int msgEpoch,
                                                          const DidCloseTextDocumentParams &closeParams) const {
     UnorderedMap<string, LSPLoop::SorbetWorkspaceFileUpdate> updates;
     preprocessSorbetWorkspaceEdit(closeParams, updates);
-    return commitSorbetWorkspaceEdits(move(gs), updates);
+    return commitSorbetWorkspaceEdits(move(gs), msgEpoch, updates);
 }
 
-LSPLoop::TypecheckRun LSPLoop::handleSorbetWorkspaceEdit(unique_ptr<core::GlobalState> gs,
+LSPLoop::TypecheckRun LSPLoop::handleSorbetWorkspaceEdit(unique_ptr<core::GlobalState> gs, int msgEpoch,
                                                          const WatchmanQueryResponse &queryResponse) const {
     UnorderedMap<string, LSPLoop::SorbetWorkspaceFileUpdate> updates;
     preprocessSorbetWorkspaceEdit(queryResponse, updates);
-    return commitSorbetWorkspaceEdits(move(gs), updates);
+    return commitSorbetWorkspaceEdits(move(gs), msgEpoch, updates);
 }
 
-LSPLoop::TypecheckRun LSPLoop::handleSorbetWorkspaceEdits(unique_ptr<core::GlobalState> gs,
+LSPLoop::TypecheckRun LSPLoop::handleSorbetWorkspaceEdits(unique_ptr<core::GlobalState> gs, int msgEpoch,
                                                           vector<unique_ptr<SorbetWorkspaceEdit>> &edits) const {
     // path => new file contents
     UnorderedMap<string, LSPLoop::SorbetWorkspaceFileUpdate> updates;
@@ -184,7 +185,7 @@ LSPLoop::TypecheckRun LSPLoop::handleSorbetWorkspaceEdits(unique_ptr<core::Globa
             }
         }
     }
-    return commitSorbetWorkspaceEdits(move(gs), updates);
+    return commitSorbetWorkspaceEdits(move(gs), msgEpoch, updates);
 }
 
 } // namespace sorbet::realmain::lsp

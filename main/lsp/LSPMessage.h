@@ -63,7 +63,10 @@ public:
     std::vector<std::unique_ptr<Timer>> timers;
 
     /** Request counter. */
-    int counter;
+    int counter = 0;
+
+    /** Edit epoch during which this message was dequeued for processing. */
+    int epoch = 0;
 
     /** If `true`, then this LSPMessage contains a canceled LSP request. */
     bool canceled = false;

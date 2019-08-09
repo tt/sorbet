@@ -45,8 +45,10 @@ enum class LSPErrorCodes {
 struct LSPResult {
     std::unique_ptr<core::GlobalState> gs;
     std::vector<std::unique_ptr<LSPMessage>> responses;
+    const bool canceled = false;
 
-    static LSPResult make(std::unique_ptr<core::GlobalState> gs, std::unique_ptr<ResponseMessage> response);
+    static LSPResult make(std::unique_ptr<core::GlobalState> gs, std::unique_ptr<ResponseMessage> response,
+                          bool canceled = false);
 };
 
 class LSPLoop {
@@ -67,6 +69,8 @@ class LSPLoop {
      * Encapsulates an update to LSP's file state.
      */
     struct FileUpdates {
+        // (If a cancelable update) The epoch that scheduled this file update.
+        std::optional<int> updateEpoch;
         std::vector<std::shared_ptr<core::File>> updatedFiles;
         std::vector<std::string> openedFiles;
         std::vector<std::string> closedFiles;
@@ -173,18 +177,34 @@ class LSPLoop {
     /** Invalidate all currently cached trees and re-index them from file system.
      * This runs code that is not considered performance critical and this is expected to be slow */
     void reIndexFromFileSystem();
-    struct TypecheckRun {
-        std::vector<std::unique_ptr<core::Error>> errors;
-        std::vector<core::FileRef> filesTypechecked;
-        std::vector<std::unique_ptr<core::lsp::QueryResponse>> responses;
+    class TypecheckRun {
+    public:
         // The global state, post-typechecking.
         std::unique_ptr<core::GlobalState> gs;
+        // Errors encountered during typechecking.
+        std::vector<std::unique_ptr<core::Error>> errors;
+        // The set of files that were typechecked for errors.
+        std::vector<core::FileRef> filesTypechecked;
+        // Responses to the active LSP query.
+        std::vector<std::unique_ptr<core::lsp::QueryResponse>> responses;
         // The edit applied to `gs`.
         LSPLoop::FileUpdates updates;
-        bool tookFastPath = false;
+        // Specifies if the typecheck run took the fast or slow path.
+        bool tookFastPath;
+        // Specifies if the typecheck run was canceled.
+        bool canceled = false;
+
+        TypecheckRun(std::unique_ptr<core::GlobalState> gs, std::vector<std::unique_ptr<core::Error>> errors = {},
+                     std::vector<core::FileRef> filesTypechecked = {},
+                     std::vector<std::unique_ptr<core::lsp::QueryResponse>> responses = {},
+                     LSPLoop::FileUpdates updates = {}, bool tookFastPath = true);
+
+        // Make a canceled TypecheckRun.
+        static TypecheckRun makeCanceled(std::unique_ptr<core::GlobalState> gs);
     };
     /** Conservatively rerun entire pipeline without caching any trees */
-    TypecheckRun runSlowPath(FileUpdates updates, const core::lsp::Query &q = core::lsp::Query::noQuery()) const;
+    TypecheckRun runSlowPath(FileUpdates updates, const core::lsp::Query &q = core::lsp::Query::noQuery(),
+                             std::unique_ptr<core::GlobalState> previousGlobalState = nullptr) const;
     /** Returns `true` if the given changes can run on the fast path. */
     bool canTakeFastPath(const FileUpdates &updates, const std::vector<core::FileHash> &hashes) const;
     /** Apply conservative heuristics to see if we can run a fast path, if not, bail out and run slowPath */
@@ -245,7 +265,8 @@ class LSPLoop {
      * If `collectThreadCounters` is `true`, it also merges in thread-local counters into the QueueState counters.
      */
     static void enqueueRequest(const std::shared_ptr<spd::logger> &logger, LSPLoop::QueueState &state,
-                               std::unique_ptr<LSPMessage> msg, bool collectThreadCounters = false);
+                               std::unique_ptr<LSPMessage> msg, std::atomic<int> &epoch,
+                               bool collectThreadCounters = false);
 
     LSPResult processRequestInternal(std::unique_ptr<core::GlobalState> gs, const LSPMessage &msg);
 
@@ -263,17 +284,17 @@ class LSPLoop {
                                        UnorderedMap<std::string, SorbetWorkspaceFileUpdate> &updates) const;
     void preprocessSorbetWorkspaceEdit(const WatchmanQueryResponse &queryResponse,
                                        UnorderedMap<std::string, SorbetWorkspaceFileUpdate> &updates) const;
-    TypecheckRun handleSorbetWorkspaceEdit(std::unique_ptr<core::GlobalState> gs,
+    TypecheckRun handleSorbetWorkspaceEdit(std::unique_ptr<core::GlobalState> gs, int msgEpoch,
                                            const DidChangeTextDocumentParams &changeParams) const;
-    TypecheckRun handleSorbetWorkspaceEdit(std::unique_ptr<core::GlobalState> gs,
+    TypecheckRun handleSorbetWorkspaceEdit(std::unique_ptr<core::GlobalState> gs, int msgEpoch,
                                            const DidOpenTextDocumentParams &openParams) const;
-    TypecheckRun handleSorbetWorkspaceEdit(std::unique_ptr<core::GlobalState> gs,
+    TypecheckRun handleSorbetWorkspaceEdit(std::unique_ptr<core::GlobalState> gs, int msgEpoch,
                                            const DidCloseTextDocumentParams &closeParams) const;
-    TypecheckRun handleSorbetWorkspaceEdit(std::unique_ptr<core::GlobalState> gs,
+    TypecheckRun handleSorbetWorkspaceEdit(std::unique_ptr<core::GlobalState> gs, int msgEpoch,
                                            const WatchmanQueryResponse &queryResponse) const;
-    TypecheckRun handleSorbetWorkspaceEdits(std::unique_ptr<core::GlobalState> gs,
+    TypecheckRun handleSorbetWorkspaceEdits(std::unique_ptr<core::GlobalState> gs, int msgEpoch,
                                             std::vector<std::unique_ptr<SorbetWorkspaceEdit>> &edits) const;
-    TypecheckRun commitSorbetWorkspaceEdits(std::unique_ptr<core::GlobalState> gs,
+    TypecheckRun commitSorbetWorkspaceEdits(std::unique_ptr<core::GlobalState> gs, int msgEpoch,
                                             UnorderedMap<std::string, SorbetWorkspaceFileUpdate> &updates) const;
     static std::string_view getFileContents(UnorderedMap<std::string, LSPLoop::SorbetWorkspaceFileUpdate> &updates,
                                             const core::GlobalState &initialGS, std::string_view path);
