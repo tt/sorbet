@@ -68,7 +68,7 @@ updateFile(unique_ptr<core::GlobalState> gs, const shared_ptr<core::File> &file,
 
 LSPResult LSPLoop::commitTypecheckRun(TypecheckRun run) {
     if (run.canceled) {
-        return LSPResult::make(move(run.gs), {}, true);
+        return LSPResult{move(run.gs), {}, true};
     }
 
     Timer timeit(logger, "commitTypecheckRun");

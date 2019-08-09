@@ -369,6 +369,7 @@ unique_ptr<core::GlobalState> LSPLoop::runLSP() {
                 guardedState.pendingRequests.push_front(move(msg));
                 mergeFileChanges(guardedState.pendingRequests);
             }
+
             for (auto &msg : result.responses) {
                 sendMessage(*msg);
             }
