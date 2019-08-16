@@ -69,6 +69,10 @@ test/cli/incremental-resolver/expect-failures/multiple_sigs.rb:68: Method `sig` 
 test/cli/incremental-resolver/expect-failures/multiple_sigs.rb:68: Method `void` does not exist on `Object` https://srb.help/7003
     68 |  sig {void}
                ^^^^
+  Autocorrect: Use `-a` to autocorrect
+    test/cli/incremental-resolver/expect-failures/multiple_sigs.rb:68: Replace with `load`
+    68 |  sig {void}
+                ^^^^
     https://github.com/sorbet/sorbet/tree/master/rbi/core/kernel.rbi#L647: Did you mean: `Kernel#load`?
      647 |  def load(filename, arg0=T.unsafe(nil)); end
             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -80,6 +84,10 @@ test/cli/incremental-resolver/expect-failures/multiple_sigs.rb:69: Method `sig` 
 test/cli/incremental-resolver/expect-failures/multiple_sigs.rb:69: Method `void` does not exist on `Object` https://srb.help/7003
     69 |  sig {void}
                ^^^^
+  Autocorrect: Use `-a` to autocorrect
+    test/cli/incremental-resolver/expect-failures/multiple_sigs.rb:69: Replace with `load`
+    69 |  sig {void}
+                ^^^^
     https://github.com/sorbet/sorbet/tree/master/rbi/core/kernel.rbi#L647: Did you mean: `Kernel#load`?
      647 |  def load(filename, arg0=T.unsafe(nil)); end
             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
